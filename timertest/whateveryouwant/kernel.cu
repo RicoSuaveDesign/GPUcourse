@@ -6,11 +6,13 @@
 #include <string>
 #include <stdlib.h>
 #include <ctime>
+#include "../hiperformancetimer/highperformancetimer.h"
 using namespace std;
 
 void assignRandNum(int* a, int* b, int * c, int size);
 bool allocMem(int** a, int** b, int** c, int size);
 void freeMem(int* a, int* b, int* c);
+void addVectors(int* a, int* b, int* c, int size);
 
 int main(int argc, char* argv[])
 {
@@ -48,17 +50,24 @@ int main(int argc, char* argv[])
 		cerr << "There was an error. Here is the message: " << endl;
 		cerr << err_message;
 	}
+	HighPrecisionTime hpt;
 
-	// assign the variables
-	assignRandNum(a, b, c, size);
-
-	//lets see if they werk
-	for (int i = 0; i < size; i++)
+	
+	double t = 0;
+	double totalt = 0;
+	// assign the variables 100 times
+	
+	for (int i = 0; i < 100; i++)
 	{
-		cout << a[i] << endl;
-		cout << b[i] << endl;
-		cout << c[i] << endl;
+		assignRandNum(a, b, c, size);
+		hpt.TimeSinceLastCall();
+		addVectors(a, b, c, size);
+		t = hpt.TimeSinceLastCall();
+		totalt += t;
+		
 	}
+	totalt = totalt / 100;
+	cout << "Average time was " << totalt << " seconds." << endl;
 
 	//free them
 	freeMem(a, b, c);
@@ -126,4 +135,11 @@ void assignRandNum(int* a, int* b, int * c, int size)
 		c[i] = 0;
 	}
 
+}
+void addVectors(int* a, int* b, int* c, int size)
+{
+	for(int i = 0; i<size; i++)
+	{
+		c[i] = a[i] + b[i];
+	}
 }
