@@ -49,6 +49,7 @@ int main(int argc, char* argv[])
 	{
 		cerr << "There was an error. Here is the message: " << endl;
 		cerr << err_message;
+		exit(1);
 	}
 	HighPrecisionTime hpt;
 
