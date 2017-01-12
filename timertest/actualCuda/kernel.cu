@@ -11,7 +11,7 @@
 using namespace std;
 
 bool setUpArrays(int **a, int **b, int **c, int size);
-cudaError_t computeOnGPU(int* c, int* a, int* b, unsigned int size, cudaDeviceProp devProp);
+cudaError_t computeOnGPU(int* c, int* a, int* b, unsigned int size, cudaDeviceProp devProp, int repetitions);
 
 
 __global__ void addKernel(int *c, const int *a, const int *b, int size)
@@ -35,7 +35,7 @@ int main(int argc, char* argv[])
 		exit(1);
 	}
 	cudaGetDeviceProperties(&devProp, 0); // get device properties for later use
-	int arraySize = 1020;
+	int arraySize = 1025;
 	int reps = 100;
 	// if cmdline args were provided, use them for array size and repetitions
 	if (argc > 1)
@@ -48,7 +48,7 @@ int main(int argc, char* argv[])
 	int retVal = 0;
 
 	int *a, *b, *c; // declare CPU arrays
-	a = b = c = nullptr; // nullptrs so they're not misused later
+	a = b = c = nullptr; // nullptrs so they can't be used w/out assigning them values
 	bool success = setUpArrays(&a, &b, &c, arraySize); // allocs the arrays
 	for (int i = 0; i < arraySize; i++)
 	{
@@ -106,7 +106,7 @@ bool setUpArrays(int **a, int **b, int **c, int size)
 	cout << "Memory successfully allocated on CPU." << endl;
 	return retVal;
 }
-cudaError_t computeOnGPU(int* c, int* a, int* b, unsigned int size, cudaDeviceProp devProp)
+cudaError_t computeOnGPU(int* c, int* a, int* b, unsigned int size, cudaDeviceProp devProp, int repetitions)
 {
 
 	int *dev_a = 0;
@@ -138,7 +138,7 @@ cudaError_t computeOnGPU(int* c, int* a, int* b, unsigned int size, cudaDevicePr
 		exit(1);
 
 	}
-	cout << "Arrays set up on GPU." << endl;
+	cout << "Arrays allocated on GPU." << endl;
 	//Copy the CPU values to the GPU
 	try
 	{
@@ -150,10 +150,10 @@ cudaError_t computeOnGPU(int* c, int* a, int* b, unsigned int size, cudaDevicePr
 		if (cudaStatus != cudaSuccess) {
 			throw "cudaMemcpy failed on b!";
 		}
-		cudaStatus = cudaMemcpy(dev_c, c, size * sizeof(int), cudaMemcpyHostToDevice);
-		if (cudaStatus != cudaSuccess) {
-			throw "cudaMemcpy failed on c!";
-		}
+		//cudaStatus = cudaMemcpy(dev_c, c, size * sizeof(int), cudaMemcpyHostToDevice);
+		//if (cudaStatus != cudaSuccess) {
+		//	throw "cudaMemcpy failed on c!"; // unnecessary bcus gpu mem is already allocated
+		//}
 	}
 	catch (char* error_copy)
 	{
@@ -167,7 +167,7 @@ cudaError_t computeOnGPU(int* c, int* a, int* b, unsigned int size, cudaDevicePr
 	int blocks_needed = (size + devProp.maxThreadsPerBlock - 1) / devProp.maxThreadsPerBlock;
 	cout << "There will be " << blocks_needed << " blocks with " << devProp.maxThreadsPerBlock << " threads each." << endl;
 
-	addKernel <<<blocks_needed, size >>>(dev_c, dev_a, dev_b, size);
+	addKernel <<<blocks_needed, devProp.maxThreadsPerBlock >>>(dev_c, dev_a, dev_b, size);
 
 	try
 	{
@@ -192,7 +192,7 @@ cudaError_t computeOnGPU(int* c, int* a, int* b, unsigned int size, cudaDevicePr
 		cudaFree(dev_a);
 		cudaFree(dev_b);
 		cudaFree(dev_c);
-		exit(1);
+		return cudaStatus;
 	}
 	cudaFree(dev_a);
 	cudaFree(dev_b);
