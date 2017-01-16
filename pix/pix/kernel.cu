@@ -14,9 +14,17 @@ void threshold(unsigned char threshold, int width, int height, unsigned char* da
 void threshold(unsigned char threshold, Mat &image);
 cudaError_t thresholdGPU(unsigned char threshold, Mat &image);
 
-__global__ void threshKernel(unsigned char * image, unsigned char* moddedimage, int size, unsigned char threshold)
+
+// shitty goddamned bad global variables
+unsigned char* dev_image = nullptr;
+unsigned char* dev_moddedimage = nullptr; 
+Mat image;
+int Threshold_slider = 128;
+
+__global__ void threshKernel(unsigned char * image, unsigned char* moddedimage, int size, int threshold)
 {
-	int i = blockDim.x * gridDim.x + threadIdx.x;
+	// multiply by blockdimx because it just werks i guess 
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if (i < size)
 	{
 		if (image[i] > threshold)
@@ -28,6 +36,26 @@ __global__ void threshKernel(unsigned char * image, unsigned char* moddedimage, 
 			moddedimage[i] = 0;
 		}
 	}
+}
+
+void on_trackbar(int, void*)
+{
+	cudaError_t cudaStatus;
+	int blocks_needed = (1023 + image.rows * image.cols) / 1024;
+	// call the kernel on the now global device variables
+	threshKernel <<<blocks_needed, 1024 >>> (dev_image, dev_moddedimage, (image.rows * image.cols), Threshold_slider);
+	cudaStatus = cudaDeviceSynchronize();
+	
+	cudaStatus = cudaMemcpy(image.data, dev_moddedimage, (image.rows * image.cols), cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess)
+	{
+		cerr << "Memcpy from GPU to CPU failed!" << endl;
+		cudaFree(dev_image);
+		cudaFree(dev_moddedimage);
+	}
+	cout << Threshold_slider << endl;
+	imshow("Display window", image);
+
 }
 
 
@@ -43,7 +71,7 @@ int main(int argc, char** argv)
 	cudaSetDevice(0);
 	cudaGetDeviceProperties(&devProp, 0);
 
-	Mat image;
+	//Mat image;
 	image = imread(argv[1], CV_LOAD_IMAGE_COLOR); // read the file
 
 	cout << "Number of channels: " << image.channels() << endl;
@@ -54,10 +82,10 @@ int main(int argc, char** argv)
 	}
 
 	cvtColor(image, image, cv::COLOR_RGB2GRAY);
-	unsigned char Threshold = 128;
+
 	//threshold(Threshold, image);
 	cudaError_t cudaStatus;
-	cudaStatus = thresholdGPU(Threshold, image);
+	cudaStatus = thresholdGPU(Threshold_slider, image);
 	if (cudaStatus != cudaSuccess)
 		cout << "Failed to apply threshold filter" << endl;
 	//else
@@ -66,7 +94,15 @@ int main(int argc, char** argv)
 	//	namedWindow("Display window", WINDOW_NORMAL); //create window for display
 	//	imshow("Display window", image); // show image inside it
 	//}
+	namedWindow("Display window", WINDOW_NORMAL); //create window for display
+	createTrackbar("Threshold", "Display window", &Threshold_slider, 255, on_trackbar);
+	imshow("Display window", image);
+	on_trackbar(Threshold_slider, 0);
+
 	waitKey(0); // wait for keystroke in window
+
+	cudaFree(dev_image); // and here we are freein the memory on gpu
+	cudaFree(dev_moddedimage);
 	return 0;
 
 
@@ -110,20 +146,17 @@ cudaError_t thresholdGPU(unsigned char threshold, Mat &image)
 	cudaError_t cudaStatus;
 	int size = image.rows * image.cols *sizeof(unsigned char);
 
-	// allocates on cpu as an unsigned char
-	unsigned char* imagedata = image.data;
-
 	// declare and then allocate GPU memory
-	unsigned char* dev_image = nullptr;
-	unsigned char* dev_moddedimage = nullptr;
+	//unsigned char* dev_image = nullptr;
+	//unsigned char* dev_moddedimage = nullptr;
 	try
 	{
-		cudaStatus = cudaMalloc((void**)&dev_image, (size * sizeof(unsigned char)));
+		cudaStatus = cudaMalloc((void**)&dev_image, (size));
 		if (cudaStatus != cudaSuccess)
 		{
 			throw "cudaMalloc failed on dev_image!";
 		}
-		cudaStatus = cudaMalloc((void**)&dev_moddedimage, (size * sizeof(unsigned char)));
+		cudaStatus = cudaMalloc((void**)&dev_moddedimage, (size));
 		if (cudaStatus != cudaSuccess)
 		{
 			throw "cudaMalloc failed on dev_moddedimage!";
@@ -140,7 +173,7 @@ cudaError_t thresholdGPU(unsigned char threshold, Mat &image)
 	}
 
 	//copy orig image to GPU
-	cudaStatus = cudaMemcpy(dev_image, imagedata, size * sizeof(unsigned char), cudaMemcpyHostToDevice);
+	cudaStatus = cudaMemcpy(dev_image, image.data, size, cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess)
 	{
 		cerr << "Memcpy from CPU to GPU failed!" << endl;
@@ -148,11 +181,11 @@ cudaError_t thresholdGPU(unsigned char threshold, Mat &image)
 		cudaFree(dev_moddedimage);
 	}
 
-	int blocks_needed = size / 1024;
+
+	int blocks_needed = (image.rows * image.cols + 1023) / 1024;
 	cout << "There will be " << blocks_needed << " blocks with 1024 threads each." << endl;
 
 	threshKernel << <blocks_needed, 1024 >> > (dev_image, dev_moddedimage, size, threshold);
-
 	try
 	{
 		cudaStatus = cudaGetLastError();
@@ -165,7 +198,7 @@ cudaError_t thresholdGPU(unsigned char threshold, Mat &image)
 		if (cudaStatus != cudaSuccess) {
 			throw "cudaDeviceSync Failed!";
 		}
-		cudaStatus = cudaMemcpy((unsigned char*)image.data, dev_moddedimage, size * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+		cudaStatus = cudaMemcpy((unsigned char*)image.data, dev_moddedimage, size, cudaMemcpyDeviceToHost);
 		if (cudaStatus != cudaSuccess) {
 			throw "cudaMemcpy failed!";
 		}
@@ -175,22 +208,9 @@ cudaError_t thresholdGPU(unsigned char threshold, Mat &image)
 		// just cout the error message for now cause we gon free the memory anyway
 		cerr << err_mess;
 	}
-	cudaFree(dev_image);
-	cudaFree(dev_moddedimage);
 
-	if (cudaStatus == cudaSuccess)
-	{
-		namedWindow("Display window", WINDOW_NORMAL); //create window for display
-		imshow("Display window", image); // show image inside it
-	}
 
 	return cudaStatus;
-
-
-
-
-
-	
 }
 
 
