@@ -4,15 +4,19 @@
 #include <iostream>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include "highperformancetimer.h"
 
 #include <stdio.h>
 
 using namespace std;
 using namespace cv;
 
+typedef unsigned char ubyte;
+
 void threshold(unsigned char threshold, int width, int height, unsigned char* data);
 void threshold(unsigned char threshold, Mat &image);
 cudaError_t thresholdGPU(unsigned char threshold, Mat &image);
+void BoxFilter(ubyte *s, ubyte *d, int w, int h, ubyte k[9], int kw, int kh, ubyte *temp);
 
 
 // shitty goddamned bad global variables
@@ -81,13 +85,25 @@ int main(int argc, char** argv)
 		return -1;
 	}
 
+	HighPrecisionTime hpt;
 	cvtColor(image, image, cv::COLOR_RGB2GRAY);
 
+	namedWindow("Display window", WINDOW_NORMAL);
+	imshow("Display window", image);
+	waitKey(0);
+	hpt.TimeSinceLastCall();
+	ubyte *s = image.data;
+	ubyte *d = image.data;
+	ubyte *temp = image.data;
+	ubyte k[9] = { 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+	BoxFilter(s, d, image.cols, image.rows,  k, 3, 3, temp);
+	cout << "The box filter took " << hpt.TimeSinceLastCall() << " seconds." << endl;
+
 	//threshold(Threshold, image);
-	cudaError_t cudaStatus;
-	cudaStatus = thresholdGPU(Threshold_slider, image);
-	if (cudaStatus != cudaSuccess)
-		cout << "Failed to apply threshold filter" << endl;
+	//cudaError_t cudaStatus;
+	//cudaStatus = thresholdGPU(Threshold_slider, image);
+	//if (cudaStatus != cudaSuccess)
+	//	cout << "Failed to apply threshold filter" << endl;
 	//else
 	//{
 
@@ -95,9 +111,9 @@ int main(int argc, char** argv)
 	//	imshow("Display window", image); // show image inside it
 	//}
 	namedWindow("Display window", WINDOW_NORMAL); //create window for display
-	createTrackbar("Threshold", "Display window", &Threshold_slider, 255, on_trackbar);
+	//createTrackbar("Threshold", "Display window", &Threshold_slider, 255, on_trackbar);
 	imshow("Display window", image);
-	on_trackbar(Threshold_slider, 0);
+	//on_trackbar(Threshold_slider, 0);
 
 	waitKey(0); // wait for keystroke in window
 
@@ -106,6 +122,39 @@ int main(int argc, char** argv)
 	return 0;
 
 
+}
+
+void BoxFilter(ubyte *s, ubyte *d, int w, int h, ubyte k[9], int kw, int kh, ubyte *temp)
+{
+	
+	// later on we divide by the sum of all the values in the box kernel -- so calculate it now
+	int kernelSum = 0;
+	for (int i = 0; i < kw*kh; i++)
+	{
+		kernelSum += k[i];
+	}
+
+	// this makes calculating relative indices (e.g. what is one value of "up" to a 1D array?) a one time task, or at the very least a much more understandable operation
+	int indices[9] = { -(w + 1),  -w, -(w - 1), -1, 0,  +1,	w - 1, w,  w + 1 };
+
+
+	int indexOffset;
+	for (int i = 1; i < h - 1; i++)
+	{
+		for (int j = 1; j < w - 1; j++)
+		{
+			// first we start with current, which starts at 0.0. Then we calculate the relative ups, downs, etc with indexoffset.
+			float current = 0.0f;
+			indexOffset = (i*w) + j;
+			for (int ki = 0; ki < kw * kh; ki++)
+			{
+				// current gets the value of the current pixel and multiplies by the value in the current index of the kernel
+				current += (float)s[indexOffset + indices[ki]] * (float)k[ki];
+			}
+			// output image pixels all are divided by kernel sum which is 9
+			d[indexOffset] = current / kernelSum;
+		}
+	}
 }
 
 void threshold(unsigned char threshold, int width, int height, unsigned char* data)
