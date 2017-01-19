@@ -16,14 +16,22 @@ typedef unsigned char ubyte;
 void threshold(unsigned char threshold, int width, int height, unsigned char* data);
 void threshold(unsigned char threshold, Mat &image);
 cudaError_t thresholdGPU(unsigned char threshold, Mat &image);
-void BoxFilter(ubyte *s, ubyte *d, int w, int h, ubyte k[9], int kw, int kh, ubyte *temp);
+void BoxFilter(ubyte *s, ubyte *d, int w, int h, int* k, int kw, int kh, ubyte *temp);
 
 
 // shitty goddamned bad global variables
+HighPrecisionTime hpt;
 unsigned char* dev_image = nullptr;
 unsigned char* dev_moddedimage = nullptr; 
 Mat image;
 int Threshold_slider = 128;
+int Box_Slider = 1;
+float totalTime = 0.0; // remember to reset this every time a new timer is called
+int timesCalled = 0;
+int ke[9] = { -1,0,1,-2,0,2,-1,0,1 };
+int k2[9] = { -1, 2,-1, 0,0,0, 1,2,1 };
+int boxk[9] = { 1,1,1,1,1,1,1,1,1 };
+
 
 __global__ void threshKernel(unsigned char * image, unsigned char* moddedimage, int size, int threshold)
 {
@@ -44,23 +52,26 @@ __global__ void threshKernel(unsigned char * image, unsigned char* moddedimage, 
 
 void on_trackbar(int, void*)
 {
-	cudaError_t cudaStatus;
-	int blocks_needed = (1023 + image.rows * image.cols) / 1024;
-	// call the kernel on the now global device variables
-	threshKernel <<<blocks_needed, 1024 >>> (dev_image, dev_moddedimage, (image.rows * image.cols), Threshold_slider);
-	cudaStatus = cudaDeviceSynchronize();
-	
-	cudaStatus = cudaMemcpy(image.data, dev_moddedimage, (image.rows * image.cols), cudaMemcpyDeviceToHost);
-	if (cudaStatus != cudaSuccess)
-	{
-		cerr << "Memcpy from GPU to CPU failed!" << endl;
-		cudaFree(dev_image);
-		cudaFree(dev_moddedimage);
-	}
-	cout << Threshold_slider << endl;
+	//cudaError_t cudaStatus;
+	//int blocks_needed = (1023 + image.rows * image.cols) / 1024;
+	//// call the kernel on the now global device variables
+	//threshKernel <<<blocks_needed, 1024 >>> (dev_image, dev_moddedimage, (image.rows * image.cols), Threshold_slider);
+	//cudaStatus = cudaDeviceSynchronize();
+	//
+	//cudaStatus = cudaMemcpy(image.data, dev_moddedimage, (image.rows * image.cols), cudaMemcpyDeviceToHost);
+	//if (cudaStatus != cudaSuccess)
+	//{
+	//	cerr << "Memcpy from GPU to CPU failed!" << endl;
+	//	cudaFree(dev_image);
+	//	cudaFree(dev_moddedimage);
+	//}
+	//cout << Threshold_slider << endl;
+	//BoxFilter(s, d, image.cols, image.rows, k, 3, 3, temp);
+	cout << hpt.TimeSinceLastCall();
 	imshow("Display window", image);
 
 }
+void box_trackbar(int, void*);
 
 
 int main(int argc, char** argv)
@@ -85,20 +96,18 @@ int main(int argc, char** argv)
 		return -1;
 	}
 
-	HighPrecisionTime hpt;
+	
 	cvtColor(image, image, cv::COLOR_RGB2GRAY);
-
+	ubyte *src = image.data;
+	ubyte *dst = image.data;
+	ubyte *temp = image.data;
+	
 	namedWindow("Display window", WINDOW_NORMAL);
 	imshow("Display window", image);
 	waitKey(0);
 	hpt.TimeSinceLastCall();
-	ubyte *s = image.data;
-	ubyte *d = image.data;
-	ubyte *temp = image.data;
-	ubyte k[9] = { 1, 1, 1, 1, 1, 1, 1, 1, 1 };
-	BoxFilter(s, d, image.cols, image.rows,  k, 3, 3, temp);
+	BoxFilter(src, dst, image.cols, image.rows,  boxk, 3, 3, temp);
 	cout << "The box filter took " << hpt.TimeSinceLastCall() << " seconds." << endl;
-
 	//threshold(Threshold, image);
 	//cudaError_t cudaStatus;
 	//cudaStatus = thresholdGPU(Threshold_slider, image);
@@ -110,21 +119,51 @@ int main(int argc, char** argv)
 	//	namedWindow("Display window", WINDOW_NORMAL); //create window for display
 	//	imshow("Display window", image); // show image inside it
 	//}
-	namedWindow("Display window", WINDOW_NORMAL); //create window for display
-	//createTrackbar("Threshold", "Display window", &Threshold_slider, 255, on_trackbar);
+	createTrackbar("Threshold", "Display window", &Box_Slider, 10, box_trackbar);
 	imshow("Display window", image);
-	//on_trackbar(Threshold_slider, 0);
+	box_trackbar(Box_Slider, 0);
 
 	waitKey(0); // wait for keystroke in window
 
-	cudaFree(dev_image); // and here we are freein the memory on gpu
-	cudaFree(dev_moddedimage);
+	cout << endl << "Final average: " << totalTime / timesCalled << " seconds" << endl;
+	cout << "image size: " << image.cols << " x " << image.rows << endl;
+	cout << "kernel size: 3 x 3" << endl;
+
+#ifdef _WIN32 || _WIN64
+	system("pause");
+#endif
+
+	//cudaFree(dev_image); // and here we are freein the memory on gpu
+	//cudaFree(dev_moddedimage);
 	return 0;
 
 
 }
 
-void BoxFilter(ubyte *s, ubyte *d, int w, int h, ubyte k[9], int kw, int kh, ubyte *temp)
+void box_trackbar(int, void*)
+{
+	int *p_k = boxk;
+
+	ubyte *s = image.data;
+	Mat d;
+	image.copyTo(d);
+	ubyte *tempo = image.data;
+	
+
+	hpt.TimeSinceLastCall();
+	BoxFilter(s, d.data, image.cols, image.rows, p_k, 3, 3, tempo);
+	float currentTime = hpt.TimeSinceLastCall();
+	totalTime += currentTime;
+	timesCalled++;
+
+	cout << "Time this run: " << currentTime << " seconds" << endl;
+	cout << "Current average: " << totalTime / timesCalled << endl;
+
+	imshow("Display window", image);
+	
+}
+
+void BoxFilter(ubyte *s, ubyte *d, int w, int h, int *k, int kw, int kh, ubyte *temp)
 {
 	
 	// later on we divide by the sum of all the values in the box kernel -- so calculate it now
@@ -134,25 +173,42 @@ void BoxFilter(ubyte *s, ubyte *d, int w, int h, ubyte k[9], int kw, int kh, uby
 		kernelSum += k[i];
 	}
 
-	// this makes calculating relative indices (e.g. what is one value of "up" to a 1D array?) a one time task, or at the very least a much more understandable operation
-	int indices[9] = { -(w + 1),  -w, -(w - 1), -1, 0,  +1,	w - 1, w,  w + 1 };
 
+	// this makes calculating relative indices (e.g. what is one value of "up" to a 1D array?) a one time task, or at the very least a much more readable operation
+	//int indices[9] = { -(w + 1),  -w, -(w - 1), -1, 0,  +1,	w - 1, w,  w + 1 };
+	
+	// calculates our image edges -- wedge is width edge, hedge is height edge
+
+	int kwedge = kw / 2;
+	int khedge = kh / 2;
 
 	int indexOffset;
-	for (int i = 1; i < h - 1; i++)
+	for (int i = khedge; i < h - khedge; i++)
 	{
-		for (int j = 1; j < w - 1; j++)
+		for (int j = kwedge; j < w - kwedge; j++)
 		{
 			// first we start with current, which starts at 0.0. Then we calculate the relative ups, downs, etc with indexoffset.
 			float current = 0.0f;
 			indexOffset = (i*w) + j;
-			for (int ki = 0; ki < kw * kh; ki++)
+			for (int ki = -khedge; ki <= khedge; ki++)
 			{
-				// current gets the value of the current pixel and multiplies by the value in the current index of the kernel
-				current += (float)s[indexOffset + indices[ki]] * (float)k[ki];
+				for (int kj = -kwedge; kj <= kwedge; kj++)
+				{
+					int relativepixel = ki * w * kj;
+					int kernelpix = (ki + khedge) * kw + kj + kwedge;
+					// current gets the value of the current pixel and multiplies by the value in the current index of the kernel
+					current += float(s[indexOffset + relativepixel]) * (float)k[kernelpix];
+				}
 			}
-			// output image pixels all are divided by kernel sum which is 9
-			d[indexOffset] = current / kernelSum;
+			if (kernelSum != 0)
+			{
+				// output image pixels all are divided by kernel sum which is 9
+				d[indexOffset] = int(current / (float)kernelSum);
+			}
+			else
+			{
+				d[indexOffset] = int(current / 1.0f);
+			}
 		}
 	}
 }
