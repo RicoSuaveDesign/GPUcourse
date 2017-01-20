@@ -30,7 +30,9 @@ float totalTime = 0.0; // remember to reset this every time a new timer is calle
 int timesCalled = 0;
 int ke[9] = { -1,0,1,-2,0,2,-1,0,1 };
 int k2[9] = { -1, 2,-1, 0,0,0, 1,2,1 };
-int boxk[9] = { 1,1,1,1,1,1,1,1,1 };
+int boxk[25];
+int kh = 5;
+int kw = 5;
 
 
 __global__ void threshKernel(unsigned char * image, unsigned char* moddedimage, int size, int threshold)
@@ -81,6 +83,10 @@ int main(int argc, char** argv)
 		cout << "Usage: display_image ImageToLoadAndDisplay" << endl;
 		return -1;
 	}
+	for (int i = 0; i < 25; i++)
+	{
+		boxk[i] = 1;
+	}
 	//set up cuda stuff so it only needs to happen once 
 	cudaDeviceProp devProp;
 	cudaSetDevice(0);
@@ -106,7 +112,7 @@ int main(int argc, char** argv)
 	imshow("Display window", image);
 	waitKey(0);
 	hpt.TimeSinceLastCall();
-	BoxFilter(src, dst, image.cols, image.rows,  boxk, 3, 3, temp);
+	BoxFilter(src, dst, image.cols, image.rows,  boxk, kh, kw, temp);
 	cout << "The box filter took " << hpt.TimeSinceLastCall() << " seconds." << endl;
 	//threshold(Threshold, image);
 	//cudaError_t cudaStatus;
@@ -151,7 +157,7 @@ void box_trackbar(int, void*)
 	
 
 	hpt.TimeSinceLastCall();
-	BoxFilter(s, d.data, image.cols, image.rows, p_k, 3, 3, tempo);
+	BoxFilter(s, d.data, image.cols, image.rows, p_k, kh, kw, tempo);
 	float currentTime = hpt.TimeSinceLastCall();
 	totalTime += currentTime;
 	timesCalled++;
@@ -194,10 +200,12 @@ void BoxFilter(ubyte *s, ubyte *d, int w, int h, int *k, int kw, int kh, ubyte *
 			{
 				for (int kj = -kwedge; kj <= kwedge; kj++)
 				{
-					int relativepixel = ki * w * kj;
+					// relative pixel is found by multiplying the current vertical kernel pixel by image width, and then adding the current kernel horizontal index
+					int relativepixel = ki * w + kj;
+					// kernel pixel is current kernel height plus vertical edge, then multiplied  by kernel hiehgt, which then current kernel width is added to horizontal edge
 					int kernelpix = (ki + khedge) * kw + kj + kwedge;
 					// current gets the value of the current pixel and multiplies by the value in the current index of the kernel
-					current += float(s[indexOffset + relativepixel]) * (float)k[kernelpix];
+					current += float(s[indexOffset + relativepixel]) * float(k[kernelpix]);
 				}
 			}
 			if (kernelSum != 0)
