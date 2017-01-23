@@ -17,6 +17,7 @@ void threshold(unsigned char threshold, int width, int height, unsigned char* da
 void threshold(unsigned char threshold, Mat &image);
 cudaError_t thresholdGPU(unsigned char threshold, Mat &image);
 void BoxFilter(ubyte *s, ubyte *d, int w, int h, int* k, int kw, int kh, ubyte *temp);
+void BoxGPU(ubyte *s, ubyte *d, int w, int h, int* k, int kw, int kh, ubyte *temp);
 
 
 // shitty goddamned bad global variables
@@ -30,10 +31,53 @@ float totalTime = 0.0; // remember to reset this every time a new timer is calle
 int timesCalled = 0;
 int ke[9] = { -1,0,1,-2,0,2,-1,0,1 };
 int k2[9] = { -1, 2,-1, 0,0,0, 1,2,1 };
-int boxk[25];
-int kh = 5;
-int kw = 5;
+int boxk[7*7];
+const int kh = 7;
+const int kw = 7;
 
+__constant__ int kernel[kw*kh];
+__constant__ float kernelsum;
+
+
+__global__ void boxKernelGPU(unsigned char * src, unsigned char* dst, int h, int w, int kh, int kw)
+{
+	//this is a two dimensional problem so we gon use blockx and blocky
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int j = blockIdx.y * blockDim.y + threadIdx.y;
+
+	int khedge = kh / 2;
+	int kwedge = kw / 2;
+	int indexOffset = (j*w) + i;
+
+	if (indexOffset < (w*h))
+	{
+
+		float current = 0.0f;
+
+		for (int ki = -khedge; ki <= khedge; ki++)
+		{
+			for (int kj = -kwedge; kj <= kwedge; kj++)
+			{
+				// relative pixel is found by multiplying the current kernel row by image width, and then adding the current kernel column
+				int relativepixel = ki * w + kj;
+				// kernel pixel is current kernel height plus vertical edge, then multiplied  by kernel hiehgt, which then current kernel width is added to horizontal edge
+				int kernelpix = (ki + khedge) * kw + kj + kwedge;
+				// current gets the value of the current pixel and multiplies by the value in the current index of the kernel
+				current += float(src[indexOffset + relativepixel]) * float(kernel[kernelpix]);
+			}
+		}
+		if (kernelsum != 0)
+		{
+			// output image pixels all are divided by kernel sum which is 9
+			dst[indexOffset] = int(current / (float)kernelsum);
+		}
+		else
+		{
+			dst[indexOffset] = int(current / 1.0f);
+		}
+	}
+
+}
 
 __global__ void threshKernel(unsigned char * image, unsigned char* moddedimage, int size, int threshold)
 {
@@ -76,6 +120,8 @@ void on_trackbar(int, void*)
 void box_trackbar(int, void*);
 
 
+
+
 int main(int argc, char** argv)
 {
 	if (argc != 2)
@@ -83,7 +129,7 @@ int main(int argc, char** argv)
 		cout << "Usage: display_image ImageToLoadAndDisplay" << endl;
 		return -1;
 	}
-	for (int i = 0; i < 25; i++)
+	for (int i = 0; i < kw*kh; i++)
 	{
 		boxk[i] = 1;
 	}
@@ -112,7 +158,7 @@ int main(int argc, char** argv)
 	imshow("Display window", image);
 	waitKey(0);
 	hpt.TimeSinceLastCall();
-	BoxFilter(src, dst, image.cols, image.rows,  boxk, kh, kw, temp);
+	BoxGPU(src, dst, image.cols, image.rows,  boxk, kh, kw, temp);
 	cout << "The box filter took " << hpt.TimeSinceLastCall() << " seconds." << endl;
 	//threshold(Threshold, image);
 	//cudaError_t cudaStatus;
@@ -139,11 +185,104 @@ int main(int argc, char** argv)
 	system("pause");
 #endif
 
-	//cudaFree(dev_image); // and here we are freein the memory on gpu
-	//cudaFree(dev_moddedimage);
+	cudaFree(dev_image); // and here we are freein the memory on gpu
+	cudaFree(dev_moddedimage);
+	cudaDeviceReset();
 	return 0;
 
 
+}
+
+void BoxGPU(ubyte *s, ubyte *d, int w, int h, int* k, int kw, int kh, ubyte *temp)
+{
+
+	cudaError_t cudaStatus;
+	int size = image.rows * image.cols * sizeof(unsigned char);
+	float hostkernelSum = 0;
+
+
+	// cuda device stuff is in main so thats gucci. first we gotta cudamalloc. 
+	try
+	{
+		cudaStatus = cudaMalloc((void**)&dev_image, (size));
+		if (cudaStatus != cudaSuccess)
+		{
+			throw("cudaMalloc failed on dev_image!");
+		}
+		cudaStatus = cudaMalloc((void**)&dev_moddedimage, (size));
+		if (cudaStatus != cudaSuccess)
+		{
+			throw("cudaMalloc failed on dev_moddedimage!");
+		}
+
+		// then we cuda memcpy, src to dev src. modded image just sits pretty and open until we output the changes done by box filter.
+		cudaStatus = cudaMemcpy(dev_image, s, size, cudaMemcpyHostToDevice);
+		if (cudaStatus != cudaSuccess)
+		{
+			throw("cudaMemcpy failed from host to dev_image!");
+		}
+
+		// we also gotta copy two constants, the kernel ptr and then the kernel sum. Sum on device is not a ptr. Pass host sum by ref. The dev constants are declared up in global vars
+		cudaStatus = cudaMemcpyToSymbol(*kernel, k, kw*kh * sizeof(int), 0, cudaMemcpyHostToDevice);
+		if (cudaStatus != cudaSuccess)
+		{
+			throw("cudaMemcpytoSymbol failed on the kernel!");
+		}
+
+		// if we make it this far, its now worth it to do a for loop
+		for (int i = 0; i < kw*kh; i++)
+		{
+			hostkernelSum += (float)k[i];
+		}
+
+		cudaStatus = cudaMemcpyToSymbol(kernelsum, &hostkernelSum, sizeof(float), 0, cudaMemcpyHostToDevice);
+		if (cudaStatus != cudaSuccess)
+		{
+			throw("cudaMemcpytoSymbol failed on the kernel sum!");
+		}
+	}
+	catch (char* err_mess)
+	{
+		cerr << err_mess;
+		cudaFree(dev_image);
+		cudaFree(dev_moddedimage);
+		cudaDeviceReset();
+		exit(1);
+		
+	}
+
+	// determine the blocks needed as well. 
+	int blocks_needed = (image.rows * image.cols + 1023) / 1024;
+	cout << "There will be " << blocks_needed << " blocks with 1024 threads each." << endl;
+
+	// Then we do the kernel. The outer for loops are taken care of by two dimensional block stuff. the inner loops are (supposedly) literally the same.
+	boxKernelGPU<<<blocks_needed, 1024>>>(dev_image, dev_moddedimage, image.rows, image.cols, kh, kw);
+
+	try
+	{
+		cudaStatus = cudaGetLastError();
+		if (cudaStatus != cudaSuccess)
+		{
+			throw "boxKernelGPU launch failed!";
+
+		}
+		cudaStatus = cudaDeviceSynchronize();
+		if (cudaStatus != cudaSuccess) {
+			throw "cudaDeviceSync Failed!";
+		}
+		// cudamemcopy back to host.
+		cudaStatus = cudaMemcpy((unsigned char*)image.data, dev_moddedimage, size, cudaMemcpyDeviceToHost);
+		if (cudaStatus != cudaSuccess) {
+			throw "cudaMemcpy failed!";
+		}
+	}
+	catch (char* err_mess)
+	{
+		// just cout the error message for now cause we gon free the memory anyway
+		cerr << err_mess;
+	}
+
+	// Cudafree happens at the the end of main, uncomment that. Also, do a cudadevice reset.
 }
 
 void box_trackbar(int, void*)
@@ -200,7 +339,7 @@ void BoxFilter(ubyte *s, ubyte *d, int w, int h, int *k, int kw, int kh, ubyte *
 			{
 				for (int kj = -kwedge; kj <= kwedge; kj++)
 				{
-					// relative pixel is found by multiplying the current vertical kernel pixel by image width, and then adding the current kernel horizontal index
+					// relative pixel is found by multiplying the current kernel row by image width, and then adding the current kernel column
 					int relativepixel = ki * w + kj;
 					// kernel pixel is current kernel height plus vertical edge, then multiplied  by kernel hiehgt, which then current kernel width is added to horizontal edge
 					int kernelpix = (ki + khedge) * kw + kj + kwedge;
@@ -210,7 +349,7 @@ void BoxFilter(ubyte *s, ubyte *d, int w, int h, int *k, int kw, int kh, ubyte *
 			}
 			if (kernelSum != 0)
 			{
-				// output image pixels all are divided by kernel sum which is 9
+				// output image pixels all are divided by kernel sum which is 9 in a 3x3 box filter
 				d[indexOffset] = int(current / (float)kernelSum);
 			}
 			else
